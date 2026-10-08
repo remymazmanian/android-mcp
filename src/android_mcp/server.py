@@ -145,6 +145,7 @@ def tool(
     `redact_all`). Those values are also scrubbed from the logged result and from error
     messages, and crash messages of such tools are withheld entirely.
     The SDK runs sync tools in a worker thread, so slow adb calls never block the server.
+    Returns the logging wrapper, so direct calls (e.g. from tests) behave like MCP calls.
     """
     annotations = ToolAnnotations(read_only_hint=read_only, destructive_hint=None if read_only else destructive)
     redactors = dict(redact or {})
@@ -171,7 +172,7 @@ def tool(
             return result
 
         mcp.tool(annotations=annotations, structured_output=False)(wrapper)
-        return fn
+        return wrapper  # type: ignore[return-value]
 
     return decorator
 
