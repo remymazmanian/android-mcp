@@ -3,7 +3,6 @@
 import functools
 import io
 import json
-import logging
 import os
 import re
 import subprocess
@@ -22,7 +21,7 @@ from mcp.types import ToolAnnotations
 from PIL import Image as PILImage
 from pydantic import Field
 
-from . import adb, ui
+from . import adb, sandbox, ui
 from .adb import AdbError, q
 
 PROJECT_DIR = Path(__file__).resolve().parents[2]
@@ -40,24 +39,23 @@ image plus its `scale`: convert image pixels with full = image_px / scale.
 
 Typical loop: ui_dump (cheap, exact) or screenshot (visual) -> tap_element / tap /
 type_text -> wait_for_element or screenshot to confirm the result.
+
+Mac-side files: push_file, pull_file and install_apk only work inside one folder on the Mac
+(~/android-mcp-files unless ANDROID_MCP_FILES_DIR is set); relative paths are relative to it.
 """
 
 mcp = MCPServer(name="android", instructions=INSTRUCTIONS, version="0.1.0")
 
 # --------------------------------------------------------------------------- logging
 
-_action_log = logging.getLogger("android_mcp.actions")
+_log_lock = threading.Lock()
 
 
-def _init_action_log() -> None:
-    if _action_log.handlers:
-        return
+def _write_log(line: str) -> None:
+    """Append one line to LOG_DIR/actions.log (LOG_DIR is read at call time, so tests can override it)."""
     LOG_DIR.mkdir(parents=True, exist_ok=True)
-    handler = logging.FileHandler(LOG_DIR / "actions.log", encoding="utf-8")
-    handler.setFormatter(logging.Formatter("%(message)s"))
-    _action_log.addHandler(handler)
-    _action_log.setLevel(logging.INFO)
-    _action_log.propagate = False
+    with _log_lock, open(LOG_DIR / "actions.log", "a", encoding="utf-8") as log:
+        log.write(line + "\n")
 
 
 def _short(text: str, limit: int) -> str:
@@ -70,55 +68,111 @@ def _summarize(result: Any) -> str:
         return " + ".join(_summarize(r) for r in result)
     if isinstance(result, Image):
         return f"image {getattr(result, '_mime_type', '?')} {len(result.data or b'') // 1024}KB"
-    text = result if isinstance(result, str) else json.dumps(result, ensure_ascii=False, default=str)
-    return _short(text, 300)
+    return result if isinstance(result, str) else json.dumps(result, ensure_ascii=False, default=str)
 
 
-def _log_call(tool_name: str, args: dict[str, Any], status: str, summary: str, started: float) -> None:
-    _init_action_log()
-    shown = {k: _short(v, 200) if isinstance(v, str) else v for k, v in args.items()}
-    _action_log.info(
+def _log_call(tool_name: str, shown_args: dict[str, Any], status: str, summary: str, started: float) -> None:
+    """Log one tool call. `shown_args` and `summary` must already be redacted."""
+    _write_log(
         " | ".join(
             [
                 datetime.now().astimezone().isoformat(timespec="milliseconds"),
                 tool_name,
-                json.dumps(shown, ensure_ascii=False, default=str),
+                json.dumps(shown_args, ensure_ascii=False, default=str),
                 status,
                 f"{time.monotonic() - started:.2f}s",
-                summary,
+                _short(summary, 300),
             ]
         )
     )
 
 
+# --------------------------------------------------------------------------- redaction
+
+Redactor = Callable[[str], str]
+
+
+def redact_all(value: str) -> str:
+    """Hide a value completely; only its length is kept."""
+    return f"[redacted {len(value)} chars]"
+
+
+def redact_url_secrets(url: str) -> str:
+    """Keep a URL's scheme and host (the audit trail); hide credentials, path, query and fragment.
+
+    Paths are hidden too because login tokens often live there (magic links, password resets).
+    """
+    try:
+        parts = urllib.parse.urlsplit(url)
+    except ValueError:
+        return redact_all(url)
+    if not parts.scheme:
+        return redact_all(url)
+    head = f"{parts.scheme}://{parts.netloc}" if parts.netloc else f"{parts.scheme}:"
+    rest = url[len(head) :] if url.lower().startswith(head.lower()) else url
+    userinfo, _, hostport = parts.netloc.rpartition("@")
+    shown = f"{parts.scheme}://{'[redacted]@' if userinfo else ''}{hostport}" if parts.netloc else head
+    if rest.startswith("/"):
+        shown, rest = shown + "/", rest[1:]
+    return shown + (redact_all(rest) if rest else "")
+
+
+def _redaction(args: dict[str, Any], redactors: dict[str, Redactor]) -> tuple[dict[str, Any], dict[str, str]]:
+    """Return (args as they may be logged, {sensitive text as it may appear: its replacement})."""
+    shown: dict[str, Any] = {}
+    hidden: dict[str, str] = {}
+    for name, value in args.items():
+        if name in redactors and isinstance(value, str) and value:
+            shown[name] = replacement = redactors[name](value)
+            if replacement != value:
+                # The raw value, its JSON-escaped form (inside JSON results) and its shell-quoted form.
+                for variant in (value, json.dumps(value, ensure_ascii=False)[1:-1], q(value)):
+                    hidden[variant] = replacement
+        else:
+            shown[name] = _short(value, 200) if isinstance(value, str) else value
+    return shown, hidden
+
+
 F = TypeVar("F", bound=Callable[..., Any])
 
 
-def tool(*, read_only: bool = False, destructive: bool = False) -> Callable[[F], F]:
+def tool(
+    *, read_only: bool = False, destructive: bool = False, redact: dict[str, Redactor] | None = None
+) -> Callable[[F], F]:
     """Register a sync function as an MCP tool, with action logging and readable errors.
 
+    `redact` maps argument names to a function giving the form that may be logged (e.g.
+    `redact_all`). Those values are also scrubbed from the logged result and from error
+    messages, and crash messages of such tools are withheld entirely.
     The SDK runs sync tools in a worker thread, so slow adb calls never block the server.
+    Returns the logging wrapper, so direct calls (e.g. from tests) behave like MCP calls.
     """
     annotations = ToolAnnotations(read_only_hint=read_only, destructive_hint=None if read_only else destructive)
+    redactors = dict(redact or {})
 
     def decorator(fn: F) -> F:
         @functools.wraps(fn)
         def wrapper(**kwargs: Any) -> Any:
             started = time.monotonic()
+            shown, hidden = _redaction(kwargs, redactors)
             try:
                 result = fn(**kwargs)
-            except (AdbError, ToolError) as e:
-                _log_call(fn.__name__, kwargs, "error", str(e), started)
-                raise ToolError(str(e)) from None
+            except (AdbError, sandbox.SandboxError, ToolError) as e:
+                message = adb.scrub(str(e), hidden)
+                _log_call(fn.__name__, shown, "error", message, started)
+                raise ToolError(message) from None
             except Exception as e:
-                message = f"{type(e).__name__}: {e}"
-                _log_call(fn.__name__, kwargs, "crash", message, started)
+                if hidden:
+                    message = f"{type(e).__name__} (details withheld: this tool's arguments are redacted)"
+                else:
+                    message = f"{type(e).__name__}: {e}"
+                _log_call(fn.__name__, shown, "crash", message, started)
                 raise ToolError(f"{fn.__name__} failed unexpectedly: {message}") from e
-            _log_call(fn.__name__, kwargs, "ok", _summarize(result), started)
+            _log_call(fn.__name__, shown, "ok", adb.scrub(_summarize(result), hidden), started)
             return result
 
         mcp.tool(annotations=annotations, structured_output=False)(wrapper)
-        return fn
+        return wrapper  # type: ignore[return-value]
 
     return decorator
 
@@ -134,8 +188,14 @@ def _serial() -> str:
     return adb.select_serial()
 
 
-def _sh(serial: str, command: str, timeout: float = adb.DEFAULT_TIMEOUT, check: bool = True) -> str:
-    return adb.shell(command, serial=serial, timeout=timeout, check=check)
+def _sh(
+    serial: str,
+    command: str,
+    timeout: float = adb.DEFAULT_TIMEOUT,
+    check: bool = True,
+    redact: tuple[str, ...] = (),
+) -> str:
+    return adb.shell(command, serial=serial, timeout=timeout, check=check, redact=redact)
 
 
 def _check_point(serial: str, x: int, y: int, what: str = "Point") -> None:
@@ -228,12 +288,15 @@ def _remote_exists(serial: str, path: str) -> bool:
 
 
 def _unique_local_path(path: Path) -> Path:
-    """`path`, or `name (1).ext`, `name (2).ext`... so existing Mac files are never overwritten."""
-    if not path.exists():
+    """`path`, or `name (1).ext`, `name (2).ext`... so existing Mac files are never overwritten.
+
+    Dangling symlinks count as taken, so a pull can never write through one.
+    """
+    if not path.exists() and not path.is_symlink():
         return path
     for n in range(1, 10_000):
         candidate = path.with_name(f"{path.stem} ({n}){path.suffix}")
-        if not candidate.exists():
+        if not candidate.exists() and not candidate.is_symlink():
             return candidate
     raise ToolError(f"Could not find a free file name next to {path}")
 
@@ -596,15 +659,16 @@ def _paste_via_clipboard(serial: str, text: str) -> str:
             "command for the paste fallback. Rewrite the text in plain ASCII, or type the ASCII parts and "
             "ask the user to enter the rest."
         )
-    result = adb.run(["shell", f"cmd clipboard set-text {q(text)}"], serial=serial, timeout=10, check=False)
-    out = adb.decode(result.stdout + result.stderr)
+    secret = (q(text), text)
+    result = adb.run(["shell", f"cmd clipboard set-text {q(text)}"], serial=serial, timeout=10, check=False, redact=secret)
+    out = adb.scrub(adb.decode(result.stdout + result.stderr), secret)
     if result.returncode != 0 or re.search(r"(?i)unknown|error|usage", out):
         raise ToolError(f"Nothing was typed: setting the device clipboard failed: {out or result.returncode}")
     _sh(serial, "input keyevent 279")  # KEYCODE_PASTE
     return f"Pasted {len(text)} characters via the device clipboard"
 
 
-@tool()
+@tool(redact={"text": redact_all})
 def type_text(text: Annotated[str, Field(description="Text to type into the focused field.")]) -> str:
     """Type text into the currently focused input field (tap the field first).
 
@@ -614,6 +678,7 @@ def type_text(text: Annotated[str, Field(description="Text to type into the focu
     for it the tool falls back to setting the device clipboard (`cmd clipboard`) and pasting.
     Limitation: stock emulator images (including Android 17) do not ship `cmd clipboard`, so on
     them non-ASCII text returns an error and nothing is typed.
+    The typed text is never written to the action log (it may be a password).
     """
     if not text:
         return "Nothing to type"
@@ -627,7 +692,7 @@ def type_text(text: Annotated[str, Field(description="Text to type into the focu
             _sh(serial, "input keyevent 61")
         else:
             for arg in _input_text_args(token):
-                _sh(serial, f"input text {q(arg)}")
+                _sh(serial, f"input text {q(arg)}", redact=(q(arg), arg))
     return f"Typed {len(text)} characters"
 
 
@@ -789,9 +854,14 @@ def current_app() -> str:
 
 
 @tool()
-def install_apk(path: Annotated[str, Field(description="Path to a .apk file on this Mac (~ is expanded).")]) -> str:
-    """Install (or update in place, keeping data) an APK from this Mac with `adb install -r`."""
-    apk = Path(path).expanduser()
+def install_apk(
+    path: Annotated[str, Field(description="A .apk file inside the files folder; relative paths are relative to it.")],
+) -> str:
+    """Install (or update in place, keeping data) an APK with `adb install -r`.
+
+    The APK must be inside the files folder on the Mac (~/android-mcp-files, or $ANDROID_MCP_FILES_DIR).
+    """
+    apk = sandbox.resolve_inside(path, "APK")
     if not apk.is_file():
         raise ToolError(f"APK not found: {apk}")
     if apk.suffix.lower() != ".apk":
@@ -804,9 +874,12 @@ def install_apk(path: Annotated[str, Field(description="Path to a .apk file on t
     return f"Installed {apk.name}"
 
 
-@tool()
+@tool(redact={"url": redact_url_secrets})
 def open_url(url: Annotated[str, Field(description="URL or URI with a scheme: https://..., tel:..., geo:..., market://...")]) -> str:
-    """Open a URL/URI with `am start -a android.intent.action.VIEW -d <url>` (browser, deep link, etc.)."""
+    """Open a URL/URI with `am start -a android.intent.action.VIEW -d <url>` (browser, deep link, etc.).
+
+    Only the scheme and host are written to the action log; the rest may carry login tokens.
+    """
     if not re.match(r"^[A-Za-z][A-Za-z0-9+.-]*:", url):
         raise ToolError("The URL needs a scheme, e.g. https://example.com")
     serial = _serial()
@@ -850,22 +923,31 @@ def _media_scan(serial: str, remote_path: str, is_dir: bool) -> dict[str, Any]:
 
 @tool()
 def push_file(
-    local_path: Annotated[str, Field(description="File or folder on this Mac (~ is expanded).")],
+    local_path: Annotated[
+        str, Field(description="File or folder inside the files folder; relative paths are relative to it.")
+    ],
     remote_dir: Annotated[str, Field(description="Destination directory on the device.")] = "/sdcard/Download/",
 ) -> str:
-    """Copy a file (or folder) from this Mac to the device, then run a media scan so it shows up in
+    """Copy a file (or folder) from the Mac to the device, then run a media scan so it shows up in
     gallery and file pickers immediately.
 
+    Only files inside the files folder on the Mac (~/android-mcp-files, or $ANDROID_MCP_FILES_DIR)
+    can be pushed; paths outside it, including via ../ or symlinks, are refused.
     If a file with the same name already exists on the device, the copy is saved as "name (1).ext"
     instead of overwriting it.
     """
-    src = Path(local_path).expanduser()
+    src = sandbox.resolve_inside(local_path, "local_path")
     if not src.exists():
         raise ToolError(f"Local path not found: {src}")
+    if src.is_dir():
+        sandbox.check_tree(src)
     if not remote_dir.startswith("/"):
         raise ToolError("remote_dir must be an absolute device path, such as /sdcard/Download/")
     serial = _serial()
-    dest = _unique_remote_path(serial, remote_dir.rstrip("/") + "/" + src.name)
+    # Push the resolved file (so a swapped symlink can't redirect the read) under the requested name.
+    requested = Path(local_path).expanduser().name
+    name = requested if requested not in ("", ".", "..") else src.name
+    dest = _unique_remote_path(serial, remote_dir.rstrip("/") + "/" + name)
     proc = adb.run(["push", str(src), dest], serial=serial, timeout=900)
     out = adb.decode(proc.stdout + proc.stderr)
     result: dict[str, Any] = {"pushed": str(src), "to": dest, "adb": out.splitlines()[-1] if out else ""}
@@ -876,18 +958,25 @@ def push_file(
 @tool()
 def pull_file(
     remote_path: Annotated[str, Field(description="File or folder on the device.")],
-    local_dir: Annotated[str, Field(description="Destination folder on this Mac (~ is expanded).")] = "~/Downloads",
+    local_dir: Annotated[
+        str | None,
+        Field(description="Destination folder inside the files folder (default: the files folder itself)."),
+    ] = None,
 ) -> str:
-    """Copy a file (or folder) from the device to a folder on this Mac.
+    """Copy a file (or folder) from the device into the files folder on the Mac.
 
+    The files folder is ~/android-mcp-files, or $ANDROID_MCP_FILES_DIR; local_dir may name a
+    subfolder of it (relative paths are relative to it). Destinations outside it are refused.
     Never overwrites: if the name is taken locally, the copy is saved as "name (1).ext".
     """
+    target_dir = sandbox.resolve_inside(local_dir, "local_dir")
+    name = PurePosixPath(remote_path.rstrip("/")).name
+    if name in ("", ".", ".."):
+        raise ToolError(f"remote_path must name a file or folder, not {remote_path!r}.")
     serial = _serial()
     if not _remote_exists(serial, remote_path):
         raise ToolError(f"{remote_path} does not exist on the device. Use list_files to browse.")
-    target_dir = Path(local_dir).expanduser()
     target_dir.mkdir(parents=True, exist_ok=True)
-    name = PurePosixPath(remote_path.rstrip("/")).name or "pulled"
     dest = _unique_local_path(target_dir / name)
     proc = adb.run(["pull", remote_path, str(dest)], serial=serial, timeout=900)
     out = adb.decode(proc.stdout + proc.stderr)
@@ -925,6 +1014,8 @@ def list_files(
 # --------------------------------------------------------------------------- escape hatch
 
 
+# shell() is deliberately not redacted: it is the one tool that can delete or change anything on
+# the device, so the audit log must show exactly what it ran. Don't pass secrets through it.
 @tool(destructive=True)
 def shell(
     command: Annotated[str, Field(description="Command line to run in the device shell.")],
@@ -955,8 +1046,8 @@ def shell(
 
 def main() -> None:
     """Entry point for `android-mcp`: serve over stdio."""
-    _init_action_log()
-    _action_log.info(f"{datetime.now().astimezone().isoformat(timespec='milliseconds')} | server start | pid {os.getpid()}")
+    _write_log(f"{datetime.now().astimezone().isoformat(timespec='milliseconds')} | server start | pid {os.getpid()}")
+    sandbox.files_root()  # create the files folder up front so the user can find it
     mcp.run()
 
 

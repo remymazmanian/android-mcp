@@ -105,6 +105,7 @@ mcpServers:
 | `ANDROID_EMULATOR` | `~/Library/Android/sdk/emulator/emulator` | emulator launcher used by `start_emulator` |
 | `ANDROID_SERIAL` | unset | Device to control. Unset: the first running `emulator-*` device (lowest port). Physical devices are only used when named here. |
 | `ANDROID_MCP_ALLOW_SHELL` | unset | Set to `1` to enable the `shell` tool |
+| `ANDROID_MCP_FILES_DIR` | `~/android-mcp-files` | The only Mac folder `push_file`, `pull_file` and `install_apk` may use (created if missing) |
 
 Set them in the `env` block of the client config, e.g. `"env": {"ANDROID_MCP_ALLOW_SHELL": "1"}`.
 
@@ -138,10 +139,10 @@ with the scale and full resolution: `full = image_px / scale`.
 | | `launch_app(package)` | `monkey -p <pkg> -c android.intent.category.LAUNCHER 1` |
 | | `force_stop(package)` | `am force-stop` |
 | | `current_app` | Foreground package/activity and focused window |
-| | `install_apk(path)` | `adb install -r` from a Mac path |
+| | `install_apk(path)` | `adb install -r` of an APK in the files folder |
 | | `open_url(url)` | `am start -a android.intent.action.VIEW -d <url>` |
-| Files | `push_file(local_path, remote_dir="/sdcard/Download/")` | `adb push`, then a media scan (`MEDIA_SCANNER_SCAN_FILE` broadcast, falling back to MediaProvider `scan_file`) and a MediaStore check, so the file shows up in gallery pickers right away |
-| | `pull_file(remote_path, local_dir="~/Downloads")` | `adb pull` |
+| Files | `push_file(local_path, remote_dir="/sdcard/Download/")` | `adb push` from the files folder, then a media scan (`MEDIA_SCANNER_SCAN_FILE` broadcast, falling back to MediaProvider `scan_file`) and a MediaStore check, so the file shows up in gallery pickers right away |
+| | `pull_file(remote_path, local_dir=None)` | `adb pull` into the files folder (or a subfolder of it) |
 | | `list_files(remote_dir="/sdcard/Download/")` | `ls -la`, parsed |
 | Escape hatch | `shell(command, timeout=30)` | `adb shell <command>`; disabled unless `ANDROID_MCP_ALLOW_SHELL=1` |
 
@@ -150,12 +151,24 @@ with the scale and full resolution: `full = image_px / scale`.
 - Every adb call is `subprocess.run` with an argument list (never `shell=True`), a timeout, and
   `-s <serial>` for the one selected device. Values that reach the device shell are quoted; package
   names are validated.
+- **Files sandbox.** The Mac-side file tools only work inside one folder: `ANDROID_MCP_FILES_DIR`,
+  default `~/android-mcp-files` (created if missing). `push_file` and `install_apk` only read from it,
+  and `pull_file` only writes into it (its default destination). Relative paths are relative to the
+  folder. Paths are resolved with symlinks followed, so `../` traversal and links pointing outside are
+  refused, as are pushed folders containing such links. This stops a prompt-injected assistant from
+  copying e.g. `~/.ssh` to the device or dropping files elsewhere on the Mac.
 - Nothing on the Mac is deleted or overwritten: `pull_file` saves as `name (1).ext` when the name is
   taken. On the device, `push_file` also never overwrites, and deleting files is only possible
   through `shell`, which is off by default.
 - Every tool call is appended to `logs/actions.log` (timestamp, tool, arguments, ok/error, duration,
-  result summary). Note that this includes text passed to `type_text`. Emulator output from
-  `start_emulator` goes to `logs/emulator.log`.
+  result summary). Sensitive arguments are redacted there and in error messages:
+  - `type_text`: the text is never logged, only `[redacted N chars]` (it may be a password).
+  - `open_url`: only scheme and host are kept, e.g. `https://example.com/[redacted 23 chars]`, because
+    paths and query strings often carry login or reset tokens.
+  - `shell`: logged verbatim on purpose. It is the one tool that can delete or change anything on the
+    device, so the audit log must show exactly what ran. Don't pass secrets through it.
+
+  Emulator output from `start_emulator` goes to `logs/emulator.log`.
 
 ## Limitations
 
@@ -181,3 +194,12 @@ uv --directory ~/agent-tools/android-mcp run python scripts/smoke_test.py
 It starts the server over stdio, like an MCP client does, and runs: list devices -> screenshot -> UI dump ->
 home -> open Settings -> find and tap "Network & internet" -> back, checking each step. The
 screenshot is saved to `logs/smoke_screenshot.jpg`. Note that it force-stops and reopens Settings.
+
+## Unit tests
+
+No emulator needed: adb is faked, and the action log, files folder and `$HOME` are redirected to
+temporary folders, so the tests never touch your device or your real files.
+
+```bash
+uv --directory ~/agent-tools/android-mcp run pytest
+```
