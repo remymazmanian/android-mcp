@@ -944,7 +944,10 @@ def push_file(
     if not remote_dir.startswith("/"):
         raise ToolError("remote_dir must be an absolute device path, such as /sdcard/Download/")
     serial = _serial()
-    dest = _unique_remote_path(serial, remote_dir.rstrip("/") + "/" + src.name)
+    # Push the resolved file (so a swapped symlink can't redirect the read) under the requested name.
+    requested = Path(local_path).expanduser().name
+    name = requested if requested not in ("", ".", "..") else src.name
+    dest = _unique_remote_path(serial, remote_dir.rstrip("/") + "/" + name)
     proc = adb.run(["push", str(src), dest], serial=serial, timeout=900)
     out = adb.decode(proc.stdout + proc.stderr)
     result: dict[str, Any] = {"pushed": str(src), "to": dest, "adb": out.splitlines()[-1] if out else ""}

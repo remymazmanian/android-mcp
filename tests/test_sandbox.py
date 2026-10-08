@@ -69,7 +69,7 @@ def test_push_file_accepts_a_symlink_that_stays_inside(scanned, files_root):
 
     server.push_file(local_path="photo.jpg")
 
-    assert scanned.calls("push")[0][1] == str(files_root / "real.jpg")
+    assert scanned.calls("push") == [["push", str(files_root / "real.jpg"), "/sdcard/Download/photo.jpg"]]
 
 
 @pytest.mark.parametrize("make_path", PUSH_ESCAPES)
