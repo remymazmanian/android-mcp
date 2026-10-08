@@ -10,6 +10,14 @@ VS Code, LM Studio, Continue, or any other MCP client) see and drive an Android 
 Built with the official MCP Python SDK (`mcp` 2.x, whose `MCPServer` is the renamed FastMCP) over
 the stdio transport.
 
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/images/how-it-works-dark.png">
+    <source media="(prefers-color-scheme: light)" srcset="docs/images/how-it-works-light.png">
+    <img alt="How android-mcp works: your AI app (Claude, Codex, VS Code, LM Studio, or Continue) passes your request to Android MCP, which sees, taps, types, and opens apps on a virtual Android phone. The app, Android MCP, and the virtual phone all run on your Mac." src="docs/images/how-it-works-light.png">
+  </picture>
+</p>
+
 ## Requirements
 
 - macOS with Android Studio; SDK at `~/Library/Android/sdk` (adb in `platform-tools/`, `emulator/`)
@@ -155,6 +163,12 @@ with the scale and full resolution: `full = image_px / scale`.
 | Escape hatch | `shell(command, timeout=30)` | `adb shell <command>`; disabled unless `ANDROID_MCP_ALLOW_SHELL=1` |
 
 ## Safety
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/images/safety-dark.png">
+  <source media="(prefers-color-scheme: light)" srcset="docs/images/safety-light.png">
+  <img alt="Safety features: an activity log where typed text shows only as hidden with a character count and web links are trimmed, plus file access limited to one folder, no overwriting, the Shell tool off by default, and control of emulators only unless a physical device is named." src="docs/images/safety-light.png">
+</picture>
 
 - Every adb call is `subprocess.run` with an argument list (never `shell=True`), a timeout, and
   `-s <serial>` for the one selected device. Values that reach the device shell are quoted; package
