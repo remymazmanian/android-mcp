@@ -1,5 +1,8 @@
 # android-mcp
 
+[![Tests](https://github.com/remymazmanian/android-mcp/actions/workflows/tests.yml/badge.svg)](https://github.com/remymazmanian/android-mcp/actions/workflows/tests.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+
 A local [MCP](https://modelcontextprotocol.io) server that lets AI assistants (Claude, Codex,
 VS Code, LM Studio, Continue, or any other MCP client) see and drive an Android emulator through
 `adb`: screenshots, UI hierarchy dumps, taps, swipes, typing, apps and files.
@@ -16,9 +19,14 @@ the stdio transport.
 ## Setup
 
 ```bash
-cd ~/agent-tools/android-mcp
+mkdir -p ~/agent-tools && cd ~/agent-tools
+git clone https://github.com/remymazmanian/android-mcp.git
+cd android-mcp
 uv sync
 ```
+
+The snippets below assume the repo lives at `~/agent-tools/android-mcp`; adjust the path if you
+cloned it somewhere else.
 
 Run command (what the MCP clients launch):
 
@@ -203,3 +211,7 @@ temporary folders, so the tests never touch your device or your real files.
 ```bash
 uv --directory ~/agent-tools/android-mcp run pytest
 ```
+
+## License
+
+[MIT](LICENSE) © 2026 Remy Mazmanian
