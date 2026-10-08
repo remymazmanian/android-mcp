@@ -1,4 +1,4 @@
-# android-mcp
+# Android MCP
 
 [![Tests](https://github.com/remymazmanian/android-mcp/actions/workflows/tests.yml/badge.svg)](https://github.com/remymazmanian/android-mcp/actions/workflows/tests.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
@@ -14,7 +14,7 @@ the stdio transport.
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="docs/images/how-it-works-dark.png">
     <source media="(prefers-color-scheme: light)" srcset="docs/images/how-it-works-light.png">
-    <img alt="How android-mcp works: your AI app (Claude, Codex, VS Code, LM Studio, or Continue) passes your request to Android MCP, which sees, taps, types, and opens apps on a virtual Android phone. The app, Android MCP, and the virtual phone all run on your Mac." src="docs/images/how-it-works-light.png">
+    <img alt="How Android MCP works: your AI app (Claude, Codex, VS Code, LM Studio, or Continue) passes your request to Android MCP, which sees, taps, types, and opens apps on a virtual Android phone. The app, Android MCP, and the virtual phone all run on your Mac." src="docs/images/how-it-works-light.png">
   </picture>
 </p>
 
