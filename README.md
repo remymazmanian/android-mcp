@@ -194,3 +194,12 @@ uv --directory ~/agent-tools/android-mcp run python scripts/smoke_test.py
 It starts the server over stdio, like an MCP client does, and runs: list devices -> screenshot -> UI dump ->
 home -> open Settings -> find and tap "Network & internet" -> back, checking each step. The
 screenshot is saved to `logs/smoke_screenshot.jpg`. Note that it force-stops and reopens Settings.
+
+## Unit tests
+
+No emulator needed: adb is faked, and the action log, files folder and `$HOME` are redirected to
+temporary folders, so the tests never touch your device or your real files.
+
+```bash
+uv --directory ~/agent-tools/android-mcp run pytest
+```
