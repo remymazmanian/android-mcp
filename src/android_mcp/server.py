@@ -3,7 +3,6 @@
 import functools
 import io
 import json
-import logging
 import os
 import re
 import subprocess
@@ -46,18 +45,14 @@ mcp = MCPServer(name="android", instructions=INSTRUCTIONS, version="0.1.0")
 
 # --------------------------------------------------------------------------- logging
 
-_action_log = logging.getLogger("android_mcp.actions")
+_log_lock = threading.Lock()
 
 
-def _init_action_log() -> None:
-    if _action_log.handlers:
-        return
+def _write_log(line: str) -> None:
+    """Append one line to LOG_DIR/actions.log (LOG_DIR is read at call time, so tests can override it)."""
     LOG_DIR.mkdir(parents=True, exist_ok=True)
-    handler = logging.FileHandler(LOG_DIR / "actions.log", encoding="utf-8")
-    handler.setFormatter(logging.Formatter("%(message)s"))
-    _action_log.addHandler(handler)
-    _action_log.setLevel(logging.INFO)
-    _action_log.propagate = False
+    with _log_lock, open(LOG_DIR / "actions.log", "a", encoding="utf-8") as log:
+        log.write(line + "\n")
 
 
 def _short(text: str, limit: int) -> str:
@@ -70,14 +65,12 @@ def _summarize(result: Any) -> str:
         return " + ".join(_summarize(r) for r in result)
     if isinstance(result, Image):
         return f"image {getattr(result, '_mime_type', '?')} {len(result.data or b'') // 1024}KB"
-    text = result if isinstance(result, str) else json.dumps(result, ensure_ascii=False, default=str)
-    return _short(text, 300)
+    return result if isinstance(result, str) else json.dumps(result, ensure_ascii=False, default=str)
 
 
 def _log_call(tool_name: str, args: dict[str, Any], status: str, summary: str, started: float) -> None:
-    _init_action_log()
     shown = {k: _short(v, 200) if isinstance(v, str) else v for k, v in args.items()}
-    _action_log.info(
+    _write_log(
         " | ".join(
             [
                 datetime.now().astimezone().isoformat(timespec="milliseconds"),
@@ -85,7 +78,7 @@ def _log_call(tool_name: str, args: dict[str, Any], status: str, summary: str, s
                 json.dumps(shown, ensure_ascii=False, default=str),
                 status,
                 f"{time.monotonic() - started:.2f}s",
-                summary,
+                _short(summary, 300),
             ]
         )
     )
@@ -955,8 +948,7 @@ def shell(
 
 def main() -> None:
     """Entry point for `android-mcp`: serve over stdio."""
-    _init_action_log()
-    _action_log.info(f"{datetime.now().astimezone().isoformat(timespec='milliseconds')} | server start | pid {os.getpid()}")
+    _write_log(f"{datetime.now().astimezone().isoformat(timespec='milliseconds')} | server start | pid {os.getpid()}")
     mcp.run()
 
 
