@@ -21,7 +21,7 @@ from mcp.types import ToolAnnotations
 from PIL import Image as PILImage
 from pydantic import Field
 
-from . import adb, ui
+from . import adb, sandbox, ui
 from .adb import AdbError, q
 
 PROJECT_DIR = Path(__file__).resolve().parents[2]
@@ -39,6 +39,9 @@ image plus its `scale`: convert image pixels with full = image_px / scale.
 
 Typical loop: ui_dump (cheap, exact) or screenshot (visual) -> tap_element / tap /
 type_text -> wait_for_element or screenshot to confirm the result.
+
+Mac-side files: push_file, pull_file and install_apk only work inside one folder on the Mac
+(~/android-mcp-files unless ANDROID_MCP_FILES_DIR is set); relative paths are relative to it.
 """
 
 mcp = MCPServer(name="android", instructions=INSTRUCTIONS, version="0.1.0")
@@ -153,7 +156,7 @@ def tool(
             shown, hidden = _redaction(kwargs, redactors)
             try:
                 result = fn(**kwargs)
-            except (AdbError, ToolError) as e:
+            except (AdbError, sandbox.SandboxError, ToolError) as e:
                 message = adb.scrub(str(e), hidden)
                 _log_call(fn.__name__, shown, "error", message, started)
                 raise ToolError(message) from None
@@ -284,12 +287,15 @@ def _remote_exists(serial: str, path: str) -> bool:
 
 
 def _unique_local_path(path: Path) -> Path:
-    """`path`, or `name (1).ext`, `name (2).ext`... so existing Mac files are never overwritten."""
-    if not path.exists():
+    """`path`, or `name (1).ext`, `name (2).ext`... so existing Mac files are never overwritten.
+
+    Dangling symlinks count as taken, so a pull can never write through one.
+    """
+    if not path.exists() and not path.is_symlink():
         return path
     for n in range(1, 10_000):
         candidate = path.with_name(f"{path.stem} ({n}){path.suffix}")
-        if not candidate.exists():
+        if not candidate.exists() and not candidate.is_symlink():
             return candidate
     raise ToolError(f"Could not find a free file name next to {path}")
 
@@ -847,9 +853,14 @@ def current_app() -> str:
 
 
 @tool()
-def install_apk(path: Annotated[str, Field(description="Path to a .apk file on this Mac (~ is expanded).")]) -> str:
-    """Install (or update in place, keeping data) an APK from this Mac with `adb install -r`."""
-    apk = Path(path).expanduser()
+def install_apk(
+    path: Annotated[str, Field(description="A .apk file inside the files folder; relative paths are relative to it.")],
+) -> str:
+    """Install (or update in place, keeping data) an APK with `adb install -r`.
+
+    The APK must be inside the files folder on the Mac (~/android-mcp-files, or $ANDROID_MCP_FILES_DIR).
+    """
+    apk = sandbox.resolve_inside(path, "APK")
     if not apk.is_file():
         raise ToolError(f"APK not found: {apk}")
     if apk.suffix.lower() != ".apk":
@@ -911,18 +922,24 @@ def _media_scan(serial: str, remote_path: str, is_dir: bool) -> dict[str, Any]:
 
 @tool()
 def push_file(
-    local_path: Annotated[str, Field(description="File or folder on this Mac (~ is expanded).")],
+    local_path: Annotated[
+        str, Field(description="File or folder inside the files folder; relative paths are relative to it.")
+    ],
     remote_dir: Annotated[str, Field(description="Destination directory on the device.")] = "/sdcard/Download/",
 ) -> str:
-    """Copy a file (or folder) from this Mac to the device, then run a media scan so it shows up in
+    """Copy a file (or folder) from the Mac to the device, then run a media scan so it shows up in
     gallery and file pickers immediately.
 
+    Only files inside the files folder on the Mac (~/android-mcp-files, or $ANDROID_MCP_FILES_DIR)
+    can be pushed; paths outside it, including via ../ or symlinks, are refused.
     If a file with the same name already exists on the device, the copy is saved as "name (1).ext"
     instead of overwriting it.
     """
-    src = Path(local_path).expanduser()
+    src = sandbox.resolve_inside(local_path, "local_path")
     if not src.exists():
         raise ToolError(f"Local path not found: {src}")
+    if src.is_dir():
+        sandbox.check_tree(src)
     if not remote_dir.startswith("/"):
         raise ToolError("remote_dir must be an absolute device path, such as /sdcard/Download/")
     serial = _serial()
@@ -937,18 +954,25 @@ def push_file(
 @tool()
 def pull_file(
     remote_path: Annotated[str, Field(description="File or folder on the device.")],
-    local_dir: Annotated[str, Field(description="Destination folder on this Mac (~ is expanded).")] = "~/Downloads",
+    local_dir: Annotated[
+        str | None,
+        Field(description="Destination folder inside the files folder (default: the files folder itself)."),
+    ] = None,
 ) -> str:
-    """Copy a file (or folder) from the device to a folder on this Mac.
+    """Copy a file (or folder) from the device into the files folder on the Mac.
 
+    The files folder is ~/android-mcp-files, or $ANDROID_MCP_FILES_DIR; local_dir may name a
+    subfolder of it (relative paths are relative to it). Destinations outside it are refused.
     Never overwrites: if the name is taken locally, the copy is saved as "name (1).ext".
     """
+    target_dir = sandbox.resolve_inside(local_dir, "local_dir")
+    name = PurePosixPath(remote_path.rstrip("/")).name
+    if name in ("", ".", ".."):
+        raise ToolError(f"remote_path must name a file or folder, not {remote_path!r}.")
     serial = _serial()
     if not _remote_exists(serial, remote_path):
         raise ToolError(f"{remote_path} does not exist on the device. Use list_files to browse.")
-    target_dir = Path(local_dir).expanduser()
     target_dir.mkdir(parents=True, exist_ok=True)
-    name = PurePosixPath(remote_path.rstrip("/")).name or "pulled"
     dest = _unique_local_path(target_dir / name)
     proc = adb.run(["pull", remote_path, str(dest)], serial=serial, timeout=900)
     out = adb.decode(proc.stdout + proc.stderr)
@@ -1019,6 +1043,7 @@ def shell(
 def main() -> None:
     """Entry point for `android-mcp`: serve over stdio."""
     _write_log(f"{datetime.now().astimezone().isoformat(timespec='milliseconds')} | server start | pid {os.getpid()}")
+    sandbox.files_root()  # create the files folder up front so the user can find it
     mcp.run()
 
 
