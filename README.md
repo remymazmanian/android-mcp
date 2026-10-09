@@ -18,6 +18,39 @@ the stdio transport.
   </picture>
 </p>
 
+## Why Android MCP instead of raw adb
+
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/images/why-mcp-dark.png">
+    <source media="(prefers-color-scheme: light)" srcset="docs/images/why-mcp-light.png">
+    <img alt="Comparison of raw adb and Android MCP. Who can use it: terminal tools only, versus any MCP app (Claude, Codex, VS Code, LM Studio, Continue). How it talks: exact commands like input tap 540 1200, versus plain requests like tap Network & internet. Seeing the screen: full-size screenshots and raw UI XML, versus smaller screenshots and a short list of buttons with tap points. Safety: full access with no guardrails, versus the shell tool off by default, one folder, and the virtual phone only. Record: no log of its own, versus every step logged with typed text hidden. Underneath, every Android MCP action still runs as adb." src="docs/images/why-mcp-light.png">
+  </picture>
+</p>
+
+`adb` is Google's low-level command-line tool: exact commands, no knowledge of AI, no guardrails.
+Android MCP is the AI-friendly layer on top of it, and every tool still ends up as an `adb` call.
+
+- **Any MCP client.** Set it up once and use it from the Claude desktop app, Claude Code, Codex,
+  VS Code, LM Studio or Continue, not only terminal agents.
+- **Fewer mistakes.** The server handles full-resolution coordinates, escaping in `type_text`
+  (spaces, literal `%s`, shell-special characters), waiting for `sys.boot_completed`, and parsing
+  `uiautomator` dumps, so the model can call `tap_element(text="Network & internet")`.
+- **Less to read.** `screenshot` is downscaled (default `scale=0.5`) and `ui_dump` returns one
+  compact JSON element per line with a ready-to-tap `center`, instead of raw XML.
+- **Safety rails.** `shell` is off unless `ANDROID_MCP_ALLOW_SHELL=1`, file tools are confined to
+  `~/android-mcp-files`, nothing is overwritten, and only emulators are used unless `ANDROID_SERIAL`
+  names a device. That matters because an assistant can be prompt-injected by text it reads. See [Safety](#safety).
+- **Accountability.** Every call is appended to `logs/actions.log` with `type_text` and `open_url`
+  secrets redacted, and each tool is annotated read-only or destructive so clients can show or
+  confirm calls.
+
+**When raw adb is still the right tool:** quick one-off commands you type yourself, and things the
+server doesn't cover yet, such as `logcat` or changing the emulator's system settings. That's what the
+off-by-default `shell` tool is for.
+
+adb is the master key; Android MCP is a labeled control panel with only the buttons you've approved.
+
 ## Requirements
 
 - macOS with Android Studio; SDK at `~/Library/Android/sdk` (adb in `platform-tools/`, `emulator/`)
