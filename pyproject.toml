@@ -1,6 +1,6 @@
 [project]
 name = "android-mcp"
-version = "0.1.0"
+version = "0.1.1"
 description = "Local MCP server that lets AI assistants control an Android emulator through adb"
 authors = [{ name = "Remy Mazmanian" }]
 readme = "README.md"

@@ -170,7 +170,7 @@ with the scale and full resolution: `full = image_px / scale`.
 | Group | Tool | What it does |
 |---|---|---|
 | Device | `list_devices` | `adb devices -l`, plus which device is selected |
-| | `start_emulator(avd="Medium_Phone", boot_timeout=180)` | Launches the AVD detached and waits for `sys.boot_completed == 1`; returns at once if it is already running |
+| | `start_emulator(avd="Medium_Phone", boot_timeout=45)` | Launches the AVD detached and waits for `sys.boot_completed == 1`; returns at once if it is already running. A cold boot can outlast one call (MCP clients usually time out at about 60 s): the result then says `"status": "booting"`, and calling again keeps waiting |
 | | `stop_emulator` | `adb emu kill` on the selected emulator (refuses physical devices) |
 | | `device_info` | Model, Android version/SDK, `wm size`, `wm density`, AVD name |
 | Screen | `screenshot(scale=0.5, image_format="jpeg")` | `screencap -p`, downscaled with Pillow, returned as an MCP image plus scale/size metadata |

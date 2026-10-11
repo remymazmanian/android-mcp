@@ -4,6 +4,16 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## [Unreleased]
 
+## [0.1.1] - 2026-10-11
+
+### Fixed
+
+- `start_emulator` no longer outlasts the client. It used to wait up to 180 seconds for Android to boot, while most MCP clients give up on a call after about 60, so a cold boot looked like a failure even though the emulator was starting fine. It now waits 45 seconds by default. If Android is still booting, it returns `"status": "booting"` instead of an error, and calling it again keeps waiting and returns as soon as the emulator is ready. `boot_timeout` can still be raised for clients that allow longer calls.
+
+### Added
+
+- `SECURITY.md` explaining how to report a vulnerability privately.
+
 ## [0.1.0] - 2026-10-08
 
 First release of Android MCP, a local MCP server that lets an AI assistant or any other MCP client see and drive an Android emulator on your Mac through `adb`. It needs macOS with Android Studio, an Android Virtual Device and uv.
@@ -21,5 +31,6 @@ First release of Android MCP, a local MCP server that lets an AI assistant or an
 - Optional `shell` tool, off unless `ANDROID_MCP_ALLOW_SHELL=1` is set.
 - Emulators only by default: a physical device is controlled only when you name it in `ANDROID_SERIAL`.
 
-[Unreleased]: https://github.com/remymazmanian/android-mcp/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/remymazmanian/android-mcp/compare/v0.1.1...HEAD
+[0.1.1]: https://github.com/remymazmanian/android-mcp/releases/tag/v0.1.1
 [0.1.0]: https://github.com/remymazmanian/android-mcp/releases/tag/v0.1.0

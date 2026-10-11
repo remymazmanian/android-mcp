@@ -44,7 +44,7 @@ Mac-side files: push_file, pull_file and install_apk only work inside one folder
 (~/android-mcp-files unless ANDROID_MCP_FILES_DIR is set); relative paths are relative to it.
 """
 
-mcp = MCPServer(name="android", instructions=INSTRUCTIONS, version="0.1.0")
+mcp = MCPServer(name="android", instructions=INSTRUCTIONS, version="0.1.1")
 
 # --------------------------------------------------------------------------- logging
 
@@ -365,13 +365,26 @@ def _tail(path: Path, lines: int = 15) -> str:
 @tool()
 def start_emulator(
     avd: Annotated[str, Field(description="AVD name from `emulator -list-avds`; a unique prefix also works.")] = "Medium_Phone",
-    boot_timeout: Annotated[int, Field(description="Seconds to wait for Android to finish booting.", ge=10, le=900)] = 180,
+    boot_timeout: Annotated[
+        int,
+        Field(
+            description=(
+                "Seconds to wait in this call for Android to finish booting. Most MCP clients give up on a "
+                "call after about 60 s, so the default stays under that; raise it only if your client allows longer."
+            ),
+            ge=10,
+            le=900,
+        ),
+    ] = 45,
 ) -> str:
     """Launch an Android Virtual Device in the background and wait until sys.boot_completed == 1.
 
     The default "Medium_Phone" matches the AVD "Medium_Phone_API_37.0" by prefix. If that AVD is
-    already running this returns at once. The emulator window keeps running after this server
-    exits; use stop_emulator to shut it down. Emulator output goes to logs/emulator.log.
+    already running this returns at once. A cold boot can take longer than one call: if Android is
+    still booting when boot_timeout runs out, the result has status "booting" and calling
+    start_emulator again keeps waiting (it returns at once when ready). The emulator window keeps
+    running after this server exits; use stop_emulator to shut it down. Emulator output goes to
+    logs/emulator.log.
     """
     emulator = adb.emulator_binary()
     name = _resolve_avd(emulator, avd)
@@ -409,9 +422,15 @@ def start_emulator(
                 {"status": "booted", "avd": name, "serial": target, "seconds": round(time.monotonic() - started, 1)}
             )
         time.sleep(2)
-    raise ToolError(
-        f"{name} did not finish booting within {boot_timeout}s (serial: {target or 'not visible to adb yet'}). "
-        "It may still be starting; call start_emulator again to keep waiting."
+    # Not an error: a cold boot often outlasts one call. Say so and let the caller come back.
+    return _json(
+        {
+            "status": "booting",
+            "avd": name,
+            "serial": target,
+            "seconds": round(time.monotonic() - started, 1),
+            "next_step": "Android is still booting. Call start_emulator again to keep waiting; it returns at once when ready.",
+        }
     )
 
 
