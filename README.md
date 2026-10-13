@@ -7,6 +7,8 @@ A local [MCP](https://modelcontextprotocol.io) server that lets AI assistants (C
 VS Code, LM Studio, Continue, or any other MCP client) see and drive an Android emulator through
 `adb`: screenshots, UI hierarchy dumps, taps, swipes, typing, apps and files.
 
+**Docs, demo & setup guide:** [remymazmanian.com/android-mcp/](https://remymazmanian.com/android-mcp/)
+
 Built with the official MCP Python SDK (`mcp` 2.x, whose `MCPServer` is the renamed FastMCP) over
 the stdio transport.
 
